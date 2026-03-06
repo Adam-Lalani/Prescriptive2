@@ -26,11 +26,18 @@ def main():
 
     resultdict = {}
     resultdict["Instance"] = filename
-    resultdict["Time"] = timer.getTime()
-    resultdict["Result"] = str(n_fails)
-    resultdict["Solution"] = schedule 
-    # feel free to return a different format for schedule from instance.solve
-    # but make sure the Solution matches the format in the handout!
+    resultdict["Time"] = round(timer.getTime(), 2)
+    resultdict["Result"] = n_fails
+
+    if is_solution and schedule is not None:
+        sol_parts = []
+        for e in range(instance.numEmployees):
+            for d in range(instance.numDays):
+                sol_parts.append(str(schedule[e][d][0]))
+                sol_parts.append(str(schedule[e][d][1]))
+        resultdict["Solution"] = " ".join(sol_parts)
+    else:
+        resultdict["Solution"] = ""
 
     # Pretty prints solution, uncomment to use
     # if is_solution:
