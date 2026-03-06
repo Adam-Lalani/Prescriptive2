@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import itertools
 import sys
 from typing import Optional, List, Tuple
 
 from ortools.constraint_solver import pywrapcp
 import math
 
-# precompute 24 permutations of (0,1,2,3) for first 4 days training req
-PERM_TABLE = [list(p) for p in itertools.permutations([0, 1, 2, 3])]
 
 
 class CPInstance:
@@ -107,11 +104,6 @@ class CPInstance:
             [solver.IntVar(0,3, f"shifts:{e}.{d}") for d in range(self.numDays)] 
             for e in range(self.numEmployees)
         ]
-        # variable to represent which permutation of the first 4 days an employee is
-        perm_var = [
-            solver.IntVar(0, len(PERM_TABLE) - 1, f"perm:{e}")
-            for e in range(self.numEmployees)
-        ] 
         hours = [
             [solver.IntVar(0,self.maxDailyWork, f"hours:{e}.{d}") for d in range(self.numDays)] 
             for e in range(self.numEmployees)
@@ -129,28 +121,9 @@ class CPInstance:
         DAY_SHIFT = 2
         EVENING_SHIFT = 3
 
-        # allowed = [(0, -1, 0)]
-        # for start in range(0, 9 - self.minConsecutiveWork):
-        #     for hrs in range(self.minConsecutiveWork, 9 - start):
-        #         allowed.append((1, start, hrs))
-        # for start in range(8, 17 - self.minConsecutiveWork):
-        #     for hrs in range(self.minConsecutiveWork, 17 - start):
-        #         allowed.append((2, start, hrs))
-        # for start in range(16, 25 - self.minConsecutiveWork):
-        #     for hrs in range(self.minConsecutiveWork, 25 - start):
-        #         allowed.append((3, start, hrs))
-        # for e in range(self.numEmployees):
-        #     for d in range(self.numDays):
-        #         solver.Add(
-        #             solver.AllowedAssignments(
-        #                 [shifts[e][d], starts[e][d], hours[e][d]],
-        #                 allowed
-        #             )
-        #         )
-        #         solver.Add(ends[e][d] == starts[e][d] + hours[e][d])
-
         allowed = [(0,-1,-1,0)] 
 
+        
         # night
         for start in range(0,9-self.minConsecutiveWork):
             for end in range(start+self.minConsecutiveWork, 9):
@@ -200,20 +173,15 @@ class CPInstance:
             solver.Add(
                 solver.Sum(day_hours) >= self.minDailyOperation
             )
-
-        # first 4 days different shifts requirement 
-
-        # day_d_values_precomp[0] = all day 0 values across the 24 permutations
-        # day_d_values_precomp[1] = all day 1 values ...
-        # etc
-        day_d_values_precomp = [
-            [PERM_TABLE[i][d] for i in range(len(PERM_TABLE))]
-            for d in range(4)
-        ]
-        for e in range(self.numEmployees):
-            for d in range(4):
-                # assigning the specific shift that an employee has based on the permutation variation they have selected
-                solver.Add(shifts[e][d] == solver.Element(day_d_values_precomp[d], perm_var[e]))
+        
+        # first 4 days different shifts reuqirement
+        for employee in range(self.numEmployees):
+            first_four = [
+                shifts[employee][day]
+                for day in range(min(4, self.numDays))
+            ]
+   
+            solver.Add(solver.AllDifferent(first_four))
         
         # employees can't work more than maxDailyWork
         for employee in range(self.numEmployees):
@@ -221,6 +189,7 @@ class CPInstance:
                 solver.Add(hours[employee][day] <= self.maxDailyWork)
         
         # employees must work at laest minConsecutiveWork (already taken care of by initial conditions) 
+        
             
         # total number of hours an employee works per week must be between minWeeklyWork and maxWeeklyWork
         totalWeeks = math.ceil(self.numDays / 7)
@@ -256,45 +225,54 @@ class CPInstance:
             ]
             solver.Add(solver.Sum(night_flags) <= self.maxTotalNightShift)
 
-        # can force ordering on first day since employees are all treated as same
-        # this helps reduce searches duplicate searches of same schedule just under different employee name
-        for employee in range(self.numEmployees - 1):
-            solver.Add(shifts[employee][0] <= shifts[employee + 1][0])
+        # for e in range(self.numEmployees):
+        #     for d in range(self.numDays):
+                
+
+        #         shift = shifts[e][d]
+        #         start = starts[e][d]
+        #         end = ends[e][d]
+        #         hour = hours[e][d]
+
+        #         # link start / end
+        #         solver.Add((start + hour) == end)
+        #         # possibly add in conditions to limit end from being 0,minConsecutiveWork
+                
+        #         # off days
+        #         solver.Add(
+        #             solver.AllowedAssignments(
+        #                 [shift, start, end, hour],
+        #                 [(0,-1,-1,0)]
+        #             )
+        #         )
+
+        #         # link shifts (enforce only 1 shift)
+        #         solver.Add(shift == (start % 8))
+        #         solver.Add(shift == (end % 8))
+
+        #         # link hours
+        #         solver.Add(hour == (end - start))
+
+
 
         # constraints
 
         # solve
-
-        # no need to branch on ends since it's linearly determined from start and end
-        # just tested, doesn't seem to be too big a difference
-        other_vars = []
-        for e in range(self.numEmployees):
-            for d in range(self.numDays):
-                other_vars.append(starts[e][d])
-                other_vars.append(hours[e][d])
-                other_vars.append(ends[e][d])
-
-        remaining_shift_vars = [shifts[e][d] for e in range(self.numEmployees) for d in range(4, self.numDays)]
-
-        # solve first 4 days first
+        # all_vars = [v for row in starts for v in row] + \
+        #         [v for row in ends for v in row] + \
+        #         [v for row in shifts for v in row] + \
+        #         [v for row in hours for v in row]
+        
+        # db = solver.DefaultPhase(all_vars)
+        shift_vars = [v for row in shifts for v in row]
+        other_vars = [v for row in starts for v in row] + [v for row in ends for v in row] + [v for row in hours for v in row]
         db1 = solver.Phase(
-            perm_var, solver.CHOOSE_FIRST_UNBOUND, solver.ASSIGN_MIN_VALUE
+            shift_vars, solver.CHOOSE_MIN_SIZE_HIGHEST_MAX, solver.ASSIGN_MAX_VALUE
         )
-
-        # solve remaining shifts
-        phases = [db1]
-        if remaining_shift_vars:
-            phases.append(solver.Phase(
-                remaining_shift_vars, solver.CHOOSE_FIRST_UNBOUND, solver.ASSIGN_MAX_VALUE
-            ))
-
-        # solve start times
-        phases.append(solver.Phase(
-            other_vars, solver.CHOOSE_FIRST_UNBOUND, solver.ASSIGN_MIN_VALUE
-        ))
-
-        db = solver.Compose(phases)
-
+        db2 = solver.Phase(
+            other_vars, solver.CHOOSE_MIN_SIZE_LOWEST_MIN, solver.ASSIGN_MIN_VALUE
+        )
+        db = solver.Compose([db1, db2])
         if time_limit_seconds is not None:
             limit = solver.TimeLimit(int(time_limit_seconds * 1000))
             solver.NewSearch(db, [limit])
