@@ -83,25 +83,135 @@ class CPInstance:
         time_limit_seconds: Optional[float] = None,
     ):
         """
-        Employee Scheduling Model 
+        Employee Scheduling Model
         """
-        pass
-    
-        # TODO: your model goes here
+        self.solver = pywrapcp.Solver("EmployeeScheduling")
+        solver = self.solver
 
-        # variables
+        E = self.numEmployees
+        D = self.numDays
+        W = self.numWeeks
+        S = self.numShifts
 
-        # constraints
+        # ── Decision Variables ──────────────────────────────────────────────
+        start = [
+            [solver.IntVar(-1, 23, f"start_{e}_{d}") for d in range(D)]
+            for e in range(E)
+        ]
+        end = [
+            [solver.IntVar(-1, 24, f"end_{e}_{d}") for d in range(D)]
+            for e in range(E)
+        ]
+        shift = [
+            [solver.IntVar(0, S - 1, f"shift_{e}_{d}") for d in range(D)]
+            for e in range(E)
+        ]
+        hours = [
+            [solver.IntVar(0, self.maxDailyWork, f"hours_{e}_{d}") for d in range(D)]
+            for e in range(E)
+        ]
 
-        # solve
-        db = self.solver.DefaultPhase(...)
-        self.solver.NewSearch(db)
+        # ── AllowedAssignments: valid (start, end, shift) tuples ────────────
+        # Tighter table: only include tuples where end-start >= minConsecutiveWork
+        min_cw = self.minConsecutiveWork
+        valid_tuples = [(-1, -1, 0)]
+        for s_val in range(0, 8 - min_cw + 1):
+            for e_val in range(s_val + min_cw, 9):
+                valid_tuples.append((s_val, e_val, 1))
+        for s_val in range(8, 16 - min_cw + 1):
+            for e_val in range(s_val + min_cw, 17):
+                valid_tuples.append((s_val, e_val, 2))
+        for s_val in range(16, 24 - min_cw + 1):
+            for e_val in range(s_val + min_cw, 25):
+                valid_tuples.append((s_val, e_val, 3))
 
-        if self.solver.NextSolution():
-            schedule = ...
-            return True, self.solver.Failures(), schedule
+        # ── Linking Constraints ─────────────────────────────────────────────
+        is_working = [[None] * D for _ in range(E)]
+        is_night = [[None] * D for _ in range(E)]
+
+        for e in range(E):
+            for d in range(D):
+                solver.Add(solver.AllowedAssignments(
+                    [start[e][d], end[e][d], shift[e][d]], valid_tuples))
+
+                solver.Add(hours[e][d] == end[e][d] - start[e][d])
+
+                is_working[e][d] = solver.IsGreaterOrEqualCstVar(shift[e][d], 1)
+                is_night[e][d] = solver.IsEqualCstVar(shift[e][d], 1)
+
+        # ── Training: AllDifferent on first 4 days ──────────────────────────
+        if D >= 4:
+            for e in range(E):
+                solver.Add(solver.AllDifferent([shift[e][d] for d in range(4)]))
+
+        # ── Demand: min employees per work shift per day ────────────────────
+        for d in range(D):
+            for s in range(1, S):
+                on_shift = [solver.IsEqualCstVar(shift[e][d], s) for e in range(E)]
+                solver.Add(solver.Sum(on_shift) >= self.minDemandDayShift[d][s])
+
+        # ── Demand: min daily operation hours ───────────────────────────────
+        for d in range(D):
+            solver.Add(
+                solver.Sum([hours[e][d] for e in range(E)]) >= self.minDailyOperation
+            )
+
+        # ── Contractual: min consecutive work when working ──────────────────
+        for e in range(E):
+            for d in range(D):
+                solver.Add(
+                    hours[e][d] >= is_working[e][d] * self.minConsecutiveWork
+                )
+
+        # ── Contractual: weekly hours bounds ────────────────────────────────
+        for e in range(E):
+            for w in range(W):
+                week_hours = [hours[e][w * 7 + dd] for dd in range(7) if w * 7 + dd < D]
+                solver.Add(solver.Sum(week_hours) >= self.minWeeklyWork)
+                solver.Add(solver.Sum(week_hours) <= self.maxWeeklyWork)
+
+        # ── Night shift: no consecutive night shifts ────────────────────────
+        for e in range(E):
+            for d in range(D - 1):
+                solver.Add(
+                    is_night[e][d] + is_night[e][d + 1] <= self.maxConsecutiveNightShift
+                )
+
+        # ── Night shift: total limit across horizon ─────────────────────────
+        for e in range(E):
+            solver.Add(
+                solver.Sum([is_night[e][d] for d in range(D)]) <= self.maxTotalNightShift
+            )
+
+        # ── Search ──────────────────────────────────────────────────────────
+        all_vars = []
+        for e in range(E):
+            for d in range(D):
+                all_vars.extend([start[e][d], end[e][d], shift[e][d]])
+
+        db = solver.DefaultPhase(all_vars)
+        if time_limit_seconds:
+            solver.NewSearch(db, solver.TimeLimit(int(time_limit_seconds * 1000)))
         else:
-            return False, self.solver.Failures(), None
+            solver.NewSearch(db)
+
+        if solver.NextSolution():
+            parts = []
+            sched = [[None] * D for _ in range(E)]
+            for e in range(E):
+                for d in range(D):
+                    s_val = start[e][d].Value()
+                    e_val = end[e][d].Value()
+                    parts.append(str(s_val))
+                    parts.append(str(e_val))
+                    sched[e][d] = (s_val, e_val)
+            self.schedule = sched
+            sol_string = " ".join(parts)
+            solver.EndSearch()
+            return True, solver.Failures(), sol_string
+        else:
+            solver.EndSearch()
+            return False, solver.Failures(), None
             
 
     def prettyPrint(self, numEmployees, numDays, sched):
